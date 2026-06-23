@@ -169,6 +169,21 @@ def weather(lon, lat):
     if best["temp"]>=28: notes.append(f"Hot ({best['temp']}°C) — start early to beat the heat.")
     if aqhi and aqhi>=7: verdict="Not recommended"; level="bad"; notes.append(f"Poor air quality (AQHI {aqhi}).")
     best.update(verdict=verdict,level=level,notes=notes,aqhi=aqhi); best.pop("_key",None)
+
+    # build the full 4-day summary for display
+    forecast=[]
+    for day,idx in sorted(days.items()):
+        if len(idx)<1: continue
+        rain=max(h["precipitation_probability"][i] for i in idx)
+        wind=sum(h["wind_speed_10m"][i] for i in idx)/len(idx)
+        temp=max(h["temperature_2m"][i] for i in idx)
+        day_verdict="Good to go"
+        if rain>=60: day_verdict="Rain likely"
+        elif rain>=40: day_verdict="Some rain risk"
+        if round(wind)>=28:
+            day_verdict="Breezy" if day_verdict=="Good to go" else day_verdict+", breezy"
+        forecast.append({"day":day,"rain":rain,"wind":round(wind),"temp":round(temp),"verdict":day_verdict,"best":day==best["day"]})
+    best["forecast"]=forecast
     return best
 
 def gen_loop(center, base, R, n=6):
@@ -184,7 +199,33 @@ def score(a, target, wind_from, surface):
     dist_pen=abs(a["km"]-target)/target*100
     wind=100-(angdiff(a["bearing"],wind_from)/180*100)
     gw={"trail":2.0,"mix":1.0,"road":-0.6}[surface]
-    return a["gravel"]*gw - a["busy"]*1.5 - dist_pen*0.9 + wind*0.5 - a["retrace"]*2.5 - a["uturn"]*5
+    return a["gravel"]*gw - a["busy"]*3.0 - dist_pen*0.9 + wind*0.5 - a["retrace"]*2.5 - a["uturn"]*5
+
+def generate_outback(center, target, wind_from):
+    half=target/2
+    KM_LAT=111.13; KM_LON=111.32*math.cos(math.radians(center[1]))
+    def endpoint(bear,dist):
+        return (center[0]+(dist/KM_LON)*math.sin(math.radians(bear)),
+                center[1]+(dist/KM_LAT)*math.cos(math.radians(bear)))
+    jobs=[(b,d) for b in (wind_from,wind_from+45,wind_from-45)
+                for d in (half,half*1.1)]
+    def work(job):
+        bear,dist=job
+        gj=brouter([center,endpoint(bear,dist)])
+        a=analyze(gj)
+        dist_pen=abs(a["km"]*2-target)/target*100
+        wind=100-(angdiff(a["bearing"],wind_from)/180*100)
+        a["score"]=a["gravel"]*2.0 - a["busy"]*3.0 - dist_pen*0.9 + wind*0.5
+        a["km"]=round(a["km"]*2,1)
+        a["coords"]=a["coords"]+list(reversed(a["coords"][:-1]))
+        return a
+    cands=[]
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for f in [ex.submit(work,j) for j in jobs]:
+            try: cands.append(f.result())
+            except Exception: pass
+    if not cands: raise RuntimeError("Could not build a route here — try a different start or distance.")
+    return max(cands, key=lambda x:x["score"])
 
 def generate(center, target, wind_from, surface):
     base_R=max(1.5, target/11.5)             # auto-calibrate radius to target distance
@@ -294,13 +335,18 @@ def add_street_names(coords, turns):
         if best and bestd<40:
             m["street"]=best; m["instruction"]=m["instruction"]+" onto "+best
 
-def plan(home_q, start_q, target, surface):
+def plan(home_q, start_q, target, surface, ev_range_km=None):
     h_lon,h_lat,h_name=geocode(home_q)
     s_lon,s_lat,s_name=geocode(start_q)
     wx=weather(s_lon,s_lat)
-    route=generate((s_lon,s_lat), target, wx["wind_from"], surface)
+    if surface=="outback":
+        route=generate_outback((s_lon,s_lat), target, wx["wind_from"])
+    else:
+        route=generate((s_lon,s_lat), target, wx["wind_from"], surface)
     one_way=haversine((h_lon,h_lat),(s_lon,s_lat))/1000*1.3   # rough driving estimate
-    rt=one_way*2; ok=rt < EV_RANGE_KM*0.85
+    rt=one_way*2
+    range_km=ev_range_km if ev_range_km else EV_RANGE_KM
+    ok=rt < range_km*0.85
     coords=route["coords"][::4]+[route["coords"][-1]]
     markers, arrows = decorate(route["coords"])
     turns = maneuvers(route["coords"])
@@ -312,13 +358,14 @@ def plan(home_q, start_q, target, surface):
         "route":{"latlngs":[[c[1],c[0]] for c in coords],
                  "markers":markers,"arrows":arrows,"maneuvers":turns,
                  "km":round(route["km"],1),"gravel":round(route["gravel"]),
-                 "busy":round(route["busy"]),"heading":compass(route["bearing"])},
+                 "busy":round(route["busy"]),"heading":compass(route["bearing"]),
+                 "type":surface},
         "weather":{"day":wx["day"],"verdict":wx["verdict"],"level":wx["level"],
                    "wind":wx["wind"],"wind_from":compass(wx["wind_from"]),
                    "temp":wx["temp"],"rain":wx["rain"],"aqhi":wx["aqhi"],"notes":wx["notes"]},
-        "ev":{"one_way":round(one_way),"round_trip":round(rt),"ok":ok,
-              "msg":("~%d km round trip — within EV range, no charging needed."%round(rt)) if ok
-                    else ("~%d km round trip — near/over EV range, plan a charging stop."%round(rt))},
+        "ev":{"one_way":round(one_way),"round_trip":round(rt),"ok":ok,"range_used":round(range_km),
+              "msg":("~%d km round trip — within your %d km EV range, no charging needed."%(round(rt),round(range_km))) if ok
+                    else ("~%d km round trip — near/over your %d km EV range, plan a charging stop."%(round(rt),round(range_km)))},
     }
 
 class H(BaseHTTPRequestHandler):
@@ -349,8 +396,10 @@ class H(BaseHTTPRequestHandler):
             if cached is not None:
                 self._send(200,cached,"application/json"); return
             try:
+                ev_range=float(q["ev_range"][0]) if "ev_range" in q else None
                 res=plan(q.get("home",["Pickering, ON"])[0], q.get("start",["Lindsay, ON"])[0],
-                         float(q.get("distance",["45"])[0]), q.get("surface",["mix"])[0])
+                         float(q.get("distance",["45"])[0]), q.get("surface",["mix"])[0],
+                         ev_range_km=ev_range)
                 body=json.dumps(res).encode()
                 mans=res["route"]["maneuvers"]      # don't cache a degraded (un-named) result:
                 if not mans or any(t.get("street") for t in mans):  # only cache good responses
