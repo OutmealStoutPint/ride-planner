@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ride Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--ink:#222;--muted:#666;--line:#e3e3df;--bg:#f6f5f1;--green:#3B6D11;--greenbg:#EAF3DE;
+        --amberbg:#FAEEDA;--amber:#854F0B;--redbg:#FCEBEB;--red:#A32D2D;--accent:#185FA5;--accentbg:#E6F1FB;}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);margin:0;background:#fff;line-height:1.5}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  header h1{font-size:18px;font-weight:600;margin:0}
+  header .tag{font-size:12px;color:var(--muted)}
+  .wrap{display:flex;flex-wrap:wrap;gap:0}
+  .panel{width:340px;min-width:300px;flex:1;padding:18px 20px;border-right:1px solid var(--line)}
+  #map{flex:2;min-width:320px;height:78vh}
+  label{font-size:12px;color:var(--muted);display:block;margin:14px 0 5px}
+  input,select{width:100%;padding:9px 10px;font-size:14px;border:1px solid var(--line);border-radius:8px;font-family:inherit}
+  button{margin-top:18px;width:100%;padding:11px;font-size:15px;font-weight:600;color:#fff;background:var(--accent);
+         border:none;border-radius:8px;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .ev{margin-top:12px;font-size:13px;padding:9px 11px;border-radius:8px}
+  .ev.ok{background:var(--greenbg);color:var(--green)} .ev.no{background:var(--amberbg);color:var(--amber)}
+  .result{margin-top:18px;padding-top:16px;border-top:1px solid var(--line);display:none}
+  .verdict{display:inline-block;font-size:13px;font-weight:600;padding:5px 11px;border-radius:8px;margin-bottom:10px}
+  .verdict.good{background:var(--greenbg);color:var(--green)} .verdict.warn{background:var(--amberbg);color:var(--amber)}
+  .verdict.bad{background:var(--redbg);color:var(--red)}
+  .stats{display:flex;gap:8px;margin:6px 0 10px}
+  .stat{flex:1;background:var(--bg);border-radius:8px;padding:8px 6px;text-align:center}
+  .stat b{display:block;font-size:18px} .stat span{font-size:11px;color:var(--muted)}
+  .notes{font-size:13px;color:var(--ink);margin:0;padding-left:18px} .notes li{margin:3px 0}
+  .err{color:var(--red);font-size:13px;margin-top:12px;display:none}
+  .hint{font-size:11px;color:var(--muted);margin-top:4px}
+  .legend{font-size:12px;color:var(--muted);margin-top:10px}
+  .kmmark{background:#fff;border:2px solid #639922;color:#2f5e0e;font:700 11px/16px system-ui;
+          width:20px;height:20px;border-radius:50%;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+  .arrow{color:#235;font-size:16px;line-height:16px;text-align:center;text-shadow:0 0 3px #fff,0 0 3px #fff}
+  .turn{width:10px;height:10px;border-radius:50%;background:#D85A30;border:2px solid #fff;box-shadow:0 0 2px rgba(0,0,0,.5)}
+</style>
+</head>
+<body>
+<header><h1>🚲 Ride Planner</h1><span class="tag">local prototype · gravel rides</span></header>
+<div class="wrap">
+  <div class="panel">
+    <label>🏠 Home location <span style="color:#aaa">· leave from by car</span></label>
+    <input id="home" value="Pickering, ON">
+    <label>📍 Ride start <span style="color:#aaa">· town to ride around</span></label>
+    <input id="start" value="Lindsay, ON">
+    <label>📏 Ride distance (km)</label>
+    <input id="distance" type="number" value="45" min="10" max="120">
+    <label>🛣️ Surface preference</label>
+    <select id="surface">
+      <option value="mix" selected>Gravel + road mix</option>
+      <option value="trail">Mostly trail / gravel</option>
+      <option value="road">Mostly quiet road</option>
+    </select>
+    <button id="go" onclick="plan()">Find a ride</button>
+    <div class="hint" id="hint"></div>
+    <div class="err" id="err"></div>
+
+    <div class="result" id="result">
+      <span class="verdict" id="verdict"></span>
+      <div class="stats">
+        <div class="stat"><b id="km">–</b><span>km loop</span></div>
+        <div class="stat"><b id="gravel">–</b><span>% gravel/trail</span></div>
+        <div class="stat"><b id="busy">–</b><span>% busy road</span></div>
+      </div>
+      <div class="ev" id="ev"></div>
+      <ul class="notes" id="notes"></ul>
+      <div class="legend">▲ arrows = ride direction · ● numbers = km from start · <span style="color:#D85A30">●</span> <span id="turns">turns</span></div>
+    </div>
+  </div>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map').setView([44.35,-78.74],10);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+let line=null, marker=null;
+
+async function plan(){
+  const btn=document.getElementById('go'), hint=document.getElementById('hint'),
+        err=document.getElementById('err'), res=document.getElementById('result');
+  err.style.display='none'; btn.disabled=true; btn.textContent='Planning…';
+  hint.textContent='Generating and scoring several candidate loops on live data — about 15 seconds.';
+  const p=new URLSearchParams({home:home.value,start:start.value,distance:distance.value,surface:surface.value});
+  try{
+    const r=await fetch('/api/plan?'+p); const d=await r.json();
+    if(d.error) throw new Error(d.error);
+    res.style.display='block'; hint.textContent='';
+    const v=document.getElementById('verdict'); v.textContent=d.weather.verdict+' · best day '+d.weather.day;
+    v.className='verdict '+d.weather.level;
+    km.textContent=d.route.km; gravel.textContent=d.route.gravel; busy.textContent=d.route.busy;
+    const ev=document.getElementById('ev'); ev.textContent='🔋 '+d.ev.msg; ev.className='ev '+(d.ev.ok?'ok':'no');
+    const ul=document.getElementById('notes'); ul.innerHTML='';
+    d.weather.notes.forEach(n=>{const li=document.createElement('li');li.textContent=n;ul.appendChild(li);});
+    if(line)map.removeLayer(line); if(marker)map.removeLayer(marker);
+    if(window.deco)window.deco.forEach(l=>map.removeLayer(l)); window.deco=[];
+    line=L.polyline(d.route.latlngs,{color:'#639922',weight:5}).addTo(map);
+    marker=L.marker([d.start.lat,d.start.lon]).addTo(map).bindPopup('Start: '+d.start.name);
+    (d.route.arrows||[]).forEach(a=>{
+      const ic=L.divIcon({className:'',html:'<div class="arrow" style="transform:rotate('+a[2]+'deg)">▲</div>',iconSize:[16,16],iconAnchor:[8,8]});
+      window.deco.push(L.marker([a[0],a[1]],{icon:ic,interactive:false}).addTo(map));
+    });
+    (d.route.markers||[]).forEach(m=>{
+      const ic=L.divIcon({className:'',html:'<div class="kmmark">'+m[2]+'</div>',iconSize:[20,20],iconAnchor:[10,10]});
+      window.deco.push(L.marker([m[0],m[1]],{icon:ic}).addTo(map).bindPopup(m[2]+' km'));
+    });
+    (d.route.maneuvers||[]).forEach(t=>{
+      const ic=L.divIcon({className:'',html:'<div class="turn"></div>',iconSize:[10,10],iconAnchor:[5,5]});
+      window.deco.push(L.marker([t.lat,t.lon],{icon:ic}).addTo(map)
+        .bindPopup(t.instruction+' · '+(t.dist_from_start_m/1000).toFixed(1)+' km · '+t.angle+'°'));
+    });
+    document.getElementById('turns').textContent=(d.route.maneuvers||[]).length+' turns';
+    map.fitBounds(line.getBounds(),{padding:[30,30]});
+  }catch(e){ err.textContent='⚠️ '+e.message; err.style.display='block'; hint.textContent=''; }
+  btn.disabled=false; btn.textContent='Find a ride';
+}
+</script>
+</body>
+</html>
