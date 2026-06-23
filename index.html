@@ -34,6 +34,12 @@
   .err{color:var(--red);font-size:13px;margin-top:12px;display:none}
   .hint{font-size:11px;color:var(--muted);margin-top:4px}
   .legend{font-size:12px;color:var(--muted);margin-top:10px}
+  .forecast{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  .forecast th{text-align:left;color:var(--muted);font-weight:500;padding:4px 6px;border-bottom:1px solid var(--line)}
+  .forecast td{padding:5px 6px;border-bottom:1px solid var(--line)}
+  .forecast tr.best-day{background:var(--greenbg);font-weight:600}
+  .forecast tr.best-day td:first-child::after{content:" ✓";color:var(--green)}
+  .explain{font-size:13px;color:var(--ink);margin:8px 0 4px;padding:9px 11px;background:var(--accentbg);border-radius:8px}
   .kmmark{background:#fff;border:2px solid #639922;color:#2f5e0e;font:700 11px/16px system-ui;
           width:20px;height:20px;border-radius:50%;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.35)}
   .arrow{color:#235;font-size:16px;line-height:16px;text-align:center;text-shadow:0 0 3px #fff,0 0 3px #fff}
@@ -86,6 +92,11 @@
         <div class="stat"><b id="gravel">–</b><span>% gravel/trail</span></div>
         <div class="stat"><b id="busy">–</b><span>% busy road</span></div>
       </div>
+      <div class="explain" id="explain" style="display:none"></div>
+      <table class="forecast" id="forecast" style="display:none">
+        <thead><tr><th>Day</th><th>Rain</th><th>Wind</th><th>Temp</th><th>Conditions</th></tr></thead>
+        <tbody id="forecast-body"></tbody>
+      </table>
       <div class="ev" id="ev"></div>
       <ul class="notes" id="notes"></ul>
       <div class="legend">▲ arrows = ride direction · ● numbers = km from start · <span style="color:#D85A30">●</span> <span id="turns">turns</span></div>
@@ -125,8 +136,34 @@ async function plan(){
     const r=await fetch('/api/plan?'+p); const d=await r.json();
     if(d.error) throw new Error(d.error);
     res.style.display='block'; hint.textContent='';
-    const v=document.getElementById('verdict'); v.textContent=d.weather.verdict+' · best day '+d.weather.day;
+    const v=document.getElementById('verdict');
+    const bestDate=new Date(d.weather.day+'T12:00:00');
+    const dayName=bestDate.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'});
+    v.textContent=d.weather.verdict+' · '+dayName;
     v.className='verdict '+d.weather.level;
+
+    // explanation of why this day was chosen
+    const forecast=d.weather.forecast||[];
+    const explain=document.getElementById('explain');
+    if(forecast.length>1){
+      explain.textContent='We looked at '+forecast.length+' days of forecasts — '+dayName+' is your best window with the lightest rain and wind.';
+    } else {
+      explain.textContent='Weather forecast for '+dayName+'.';
+    }
+    explain.style.display='block';
+
+    // 4-day forecast table
+    const tbody=document.getElementById('forecast-body');
+    tbody.innerHTML='';
+    forecast.forEach(f=>{
+      const d2=new Date(f.day+'T12:00:00');
+      const label=d2.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});
+      const tr=document.createElement('tr');
+      if(f.best) tr.className='best-day';
+      tr.innerHTML=`<td>${label}</td><td>${Math.round(f.rain)}%</td><td>${f.wind} km/h</td><td>${f.temp}°C</td><td>${f.verdict}</td>`;
+      tbody.appendChild(tr);
+    });
+    document.getElementById('forecast').style.display='table';
     km.textContent=d.route.km; gravel.textContent=d.route.gravel; busy.textContent=d.route.busy;
     const ev=document.getElementById('ev');
     if(document.getElementById('ev-toggle').checked){
