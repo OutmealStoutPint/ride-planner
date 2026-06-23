@@ -45,17 +45,36 @@
 <div class="wrap">
   <div class="panel">
     <label>🏠 Home location <span style="color:#aaa">· leave from by car</span></label>
-    <input id="home" value="Pickering, ON">
+    <input id="home" placeholder="e.g. Pickering, ON">
     <label>📍 Ride start <span style="color:#aaa">· town to ride around</span></label>
-    <input id="start" value="Lindsay, ON">
+    <input id="start" placeholder="e.g. Lindsay, ON">
     <label>📏 Ride distance (km)</label>
-    <input id="distance" type="number" value="45" min="10" max="120">
-    <label>🛣️ Surface preference</label>
+    <input id="distance" type="number" placeholder="e.g. 45" min="10" max="120">
+    <label>🛣️ Route type</label>
     <select id="surface">
-      <option value="mix" selected>Gravel + road mix</option>
-      <option value="trail">Mostly trail / gravel</option>
-      <option value="road">Mostly quiet road</option>
+      <option value="mix" selected>Loop · Gravel + road mix</option>
+      <option value="trail">Loop · Mostly trail / gravel</option>
+      <option value="road">Loop · Mostly quiet road</option>
+      <option value="outback">Out-and-back · follow a trail</option>
     </select>
+
+    <div style="margin-top:16px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--bg)">
+      <label style="margin:0;display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="ev-toggle" onchange="toggleEV()" style="width:auto;margin:0">
+        <span style="font-size:13px;color:var(--ink)">🔋 Travelling by EV</span>
+      </label>
+      <div id="ev-inputs" style="display:none;margin-top:10px">
+        <label style="margin:6px 0 4px">EV range (km)</label>
+        <input id="ev-range" type="number" value="380" min="50" max="800" placeholder="e.g. 380">
+        <label style="margin:8px 0 4px">DC fast charger connector</label>
+        <select id="ev-connector">
+          <option value="CCS">CCS (most EVs incl. Kia, Hyundai, VW, BMW)</option>
+          <option value="CHAdeMO">CHAdeMO (older Nissan Leaf)</option>
+          <option value="Tesla">Tesla (North American connector)</option>
+        </select>
+      </div>
+    </div>
+
     <button id="go" onclick="plan()">Find a ride</button>
     <div class="hint" id="hint"></div>
     <div class="err" id="err"></div>
@@ -81,12 +100,27 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
 let line=null, marker=null;
 
+function toggleEV(){
+  document.getElementById('ev-inputs').style.display=
+    document.getElementById('ev-toggle').checked ? 'block' : 'none';
+}
+
 async function plan(){
   const btn=document.getElementById('go'), hint=document.getElementById('hint'),
         err=document.getElementById('err'), res=document.getElementById('result');
-  err.style.display='none'; btn.disabled=true; btn.textContent='Planning…';
+  err.style.display='none';
+  if(!home.value.trim()||!start.value.trim()||!distance.value){
+    err.textContent='⚠️ Please fill in Home location, Ride start, and Distance.';
+    err.style.display='block'; return;
+  }
+  const surfVal=surface.value;
+  if(surfVal==='outback'){
+    err.textContent='ℹ️ Out-and-back routing is coming soon! For now, choose a loop type and pick a start town near your trail (e.g. Uxbridge for the Trans Canada Trail east).';
+    err.style.display='block'; return;
+  }
+  btn.disabled=true; btn.textContent='Planning…';
   hint.textContent='Generating and scoring several candidate loops on live data — about 15 seconds.';
-  const p=new URLSearchParams({home:home.value,start:start.value,distance:distance.value,surface:surface.value});
+  const p=new URLSearchParams({home:home.value,start:start.value,distance:distance.value,surface:surfVal});
   try{
     const r=await fetch('/api/plan?'+p); const d=await r.json();
     if(d.error) throw new Error(d.error);
@@ -94,7 +128,10 @@ async function plan(){
     const v=document.getElementById('verdict'); v.textContent=d.weather.verdict+' · best day '+d.weather.day;
     v.className='verdict '+d.weather.level;
     km.textContent=d.route.km; gravel.textContent=d.route.gravel; busy.textContent=d.route.busy;
-    const ev=document.getElementById('ev'); ev.textContent='🔋 '+d.ev.msg; ev.className='ev '+(d.ev.ok?'ok':'no');
+    const ev=document.getElementById('ev');
+    if(document.getElementById('ev-toggle').checked){
+      ev.textContent='🔋 '+d.ev.msg; ev.className='ev '+(d.ev.ok?'ok':'no'); ev.style.display='block';
+    } else { ev.style.display='none'; }
     const ul=document.getElementById('notes'); ul.innerHTML='';
     d.weather.notes.forEach(n=>{const li=document.createElement('li');li.textContent=n;ul.appendChild(li);});
     if(line)map.removeLayer(line); if(marker)map.removeLayer(marker);
