@@ -207,8 +207,7 @@ def generate_outback(center, target, wind_from):
     def endpoint(bear,dist):
         return (center[0]+(dist/KM_LON)*math.sin(math.radians(bear)),
                 center[1]+(dist/KM_LAT)*math.cos(math.radians(bear)))
-    jobs=[(b,d) for b in (wind_from,wind_from+45,wind_from-45)
-                for d in (half,half*1.1)]
+    jobs=[(wind_from,half),(wind_from+45,half),(wind_from-45,half)]
     def work(job):
         bear,dist=job
         gj=brouter([center,endpoint(bear,dist)])
@@ -229,8 +228,8 @@ def generate_outback(center, target, wind_from):
 
 def generate(center, target, wind_from, surface):
     base_R=max(1.5, target/11.5)             # auto-calibrate radius to target distance
-    jobs=[(base,R) for base in (wind_from, wind_from+60, wind_from-60)
-                   for R in (base_R, base_R*1.2)]
+    jobs=[(wind_from,base_R),(wind_from,base_R*1.2),
+          (wind_from+60,base_R),(wind_from-60,base_R)]
     def work(job):
         base,R=job
         a=analyze(brouter(gen_loop(center,base,R)))
