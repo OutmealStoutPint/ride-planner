@@ -88,7 +88,7 @@
     <div class="result" id="result">
       <span class="verdict" id="verdict"></span>
       <div class="stats">
-        <div class="stat"><b id="km">–</b><span>km loop</span></div>
+        <div class="stat"><b id="km">–</b><span id="km-label">km loop</span></div>
         <div class="stat"><b id="gravel">–</b><span>% gravel/trail</span></div>
         <div class="stat"><b id="busy">–</b><span>% busy road</span></div>
       </div>
@@ -125,13 +125,13 @@ async function plan(){
     err.style.display='block'; return;
   }
   const surfVal=surface.value;
-  if(surfVal==='outback'){
-    err.textContent='ℹ️ Out-and-back routing is coming soon! For now, choose a loop type and pick a start town near your trail (e.g. Uxbridge for the Trans Canada Trail east).';
-    err.style.display='block'; return;
-  }
   btn.disabled=true; btn.textContent='Planning…';
   hint.textContent='Generating and scoring several candidate loops on live data — about 15 seconds.';
-  const p=new URLSearchParams({home:home.value,start:start.value,distance:distance.value,surface:surfVal});
+  const params={home:home.value,start:start.value,distance:distance.value,surface:surfVal};
+  if(document.getElementById('ev-toggle').checked){
+    params.ev_range=document.getElementById('ev-range').value;
+  }
+  const p=new URLSearchParams(params);
   try{
     const r=await fetch('/api/plan?'+p); const d=await r.json();
     if(d.error) throw new Error(d.error);
@@ -165,6 +165,7 @@ async function plan(){
     });
     document.getElementById('forecast').style.display='table';
     km.textContent=d.route.km; gravel.textContent=d.route.gravel; busy.textContent=d.route.busy;
+    document.getElementById('km-label').textContent=d.route.type==='outback'?'km out-and-back':'km loop';
     const ev=document.getElementById('ev');
     if(document.getElementById('ev-toggle').checked){
       ev.textContent='🔋 '+d.ev.msg; ev.className='ev '+(d.ev.ok?'ok':'no'); ev.style.display='block';
