@@ -80,7 +80,11 @@ def brouter(via):
     ll="|".join(f"{lo},{la}" for lo,la in via)
     url="https://brouter.de/brouter?"+urllib.parse.urlencode(
         {"lonlats":ll,"profile":"trekking","alternativeidx":0,"format":"geojson"})
-    return getj(url)
+    for attempt in range(2):
+        try: return getj(url)
+        except urllib.error.HTTPError as e:
+            if e.code==429 and attempt==0: time.sleep(4)
+            else: raise
 
 def overpass(q):
     data=urllib.parse.urlencode({"data":q}).encode()
@@ -230,12 +234,14 @@ def _fetch_candidates(center, target, wind_from):
     base_R=max(1.5, target/11.5)
     jobs=[(wind_from,base_R),(wind_from,base_R*1.2),
           (wind_from+60,base_R),(wind_from-60,base_R)]
-    def work(job):
+    def work(job, delay=0):
+        if delay: time.sleep(delay)
         base,R=job
         return analyze(brouter(gen_loop(center,base,R)))
     cands=[]
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        for f in [ex.submit(work,j) for j in jobs]:
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures=[ex.submit(work,j,i*1.0) for i,j in enumerate(jobs)]
+        for f in futures:
             try: cands.append(f.result())
             except Exception: pass
     if not cands: raise RuntimeError("Could not build a route here — try a different start or distance.")
