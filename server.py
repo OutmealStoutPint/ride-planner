@@ -6,7 +6,7 @@ Path A: this Python process is the "engine" (route generation + scoring + live
 weather), the browser shows the page and a real map. Uses only the Python standard
 library, so there is nothing to pip-install.
 """
-import json, math, os, time, urllib.parse, urllib.request
+import copy, json, math, os, time, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -226,26 +226,48 @@ def generate_outback(center, target, wind_from):
     if not cands: raise RuntimeError("Could not build a route here — try a different start or distance.")
     return max(cands, key=lambda x:x["score"])
 
-def generate(center, target, wind_from, surface):
-    base_R=max(1.5, target/11.5)             # auto-calibrate radius to target distance
+def _fetch_candidates(center, target, wind_from):
+    base_R=max(1.5, target/11.5)
     jobs=[(wind_from,base_R),(wind_from,base_R*1.2),
           (wind_from+60,base_R),(wind_from-60,base_R)]
     def work(job):
         base,R=job
-        a=analyze(brouter(gen_loop(center,base,R)))
-        a["score"]=score(a,target,wind_from,surface)
-        return a
+        return analyze(brouter(gen_loop(center,base,R)))
     cands=[]
-    with ThreadPoolExecutor(max_workers=3) as ex:   # route candidates in parallel (3 at a time,
-        for f in [ex.submit(work,j) for j in jobs]:  # to stay polite to the public BRouter server)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for f in [ex.submit(work,j) for j in jobs]:
             try: cands.append(f.result())
             except Exception: pass
     if not cands: raise RuntimeError("Could not build a route here — try a different start or distance.")
-    best=max(cands, key=lambda x:x["score"])
-    best["coords"]=deloop(best["coords"])     # physically trim spurs off the chosen route
-    cc=best["coords"]
-    best["km"]=sum(haversine(cc[i-1],cc[i]) for i in range(1,len(cc)))/1000  # km of the cleaned loop
-    return best
+    return cands
+
+def _finalize(cand):
+    c=copy.deepcopy(cand)
+    c["coords"]=deloop(c["coords"])
+    cc=c["coords"]
+    c["km"]=sum(haversine(cc[i-1],cc[i]) for i in range(1,len(cc)))/1000
+    return c
+
+def generate(center, target, wind_from, surface):
+    cands=_fetch_candidates(center, target, wind_from)
+    for a in cands: a["score"]=score(a,target,wind_from,surface)
+    return _finalize(max(cands, key=lambda x:x["score"]))
+
+def generate_both(center, target, wind_from, surface):
+    cands=_fetch_candidates(center, target, wind_from)
+    # Route A: wind-smart (full score including wind alignment term)
+    for a in cands: a["wind_score"]=score(a,target,wind_from,surface)
+    wi=max(range(len(cands)), key=lambda i:cands[i]["wind_score"])
+    # Route B: best gravel (same score but wind term removed)
+    gw={"trail":2.0,"mix":1.0,"road":-0.6}.get(surface,1.0)
+    for a in cands:
+        dist_pen=abs(a["km"]-target)/target*100
+        a["gravel_score"]=a["gravel"]*gw - a["busy"]*3.0 - dist_pen*0.9 - a["retrace"]*2.5 - a["uturn"]*5
+    gi=max(range(len(cands)), key=lambda i:cands[i]["gravel_score"])
+    route_a=_finalize(cands[wi])
+    same=(wi==gi)
+    route_b=None if same else _finalize(cands[gi])
+    return route_a, route_b, same
 
 def decorate(coords):
     # walk the full route; drop a km marker every 5 km and a direction arrow every
@@ -334,34 +356,43 @@ def add_street_names(coords, turns):
         if best and bestd<40:
             m["street"]=best; m["instruction"]=m["instruction"]+" onto "+best
 
+def _route_payload(r, surface, label, description):
+    coords2=r["coords"][::4]+[r["coords"][-1]]
+    mkr,arr=decorate(r["coords"])
+    return {"latlngs":[[c[1],c[0]] for c in coords2],"markers":mkr,"arrows":arr,
+            "km":round(r["km"],1),"gravel":round(r["gravel"]),"busy":round(r["busy"]),
+            "heading":compass(r["bearing"]),"type":surface,"label":label,"description":description}
+
 def plan(home_q, start_q, target, surface, ev_range_km=None):
     h_lon,h_lat,h_name=geocode(home_q)
     s_lon,s_lat,s_name=geocode(start_q)
     wx=weather(s_lon,s_lat)
+    wind_dir=compass(wx["wind_from"])
     if surface=="outback":
         route=generate_outback((s_lon,s_lat), target, wx["wind_from"])
+        route_a=_route_payload(route,surface,"Out-and-back",
+            f"Heads {wind_dir} into the wind — tailwind home · {round(route['gravel'])}% gravel · {round(route['busy'])}% busy road")
+        turns=maneuvers(route["coords"]); add_street_names(route["coords"],turns)
+        for m in turns: m.pop("_onto",None)
+        route_a["maneuvers"]=turns; route_b=None; routes_same=True
     else:
-        route=generate((s_lon,s_lat), target, wx["wind_from"], surface)
-    one_way=haversine((h_lon,h_lat),(s_lon,s_lat))/1000*1.3   # rough driving estimate
-    rt=one_way*2
-    range_km=ev_range_km if ev_range_km else EV_RANGE_KM
-    ok=rt < range_km*0.85
-    coords=route["coords"][::4]+[route["coords"][-1]]
-    markers, arrows = decorate(route["coords"])
-    turns = maneuvers(route["coords"])
-    add_street_names(route["coords"], turns)
-    for m in turns: m.pop("_onto", None)
+        ra,rb,routes_same=generate_both((s_lon,s_lat),target,wx["wind_from"],surface)
+        turns=maneuvers(ra["coords"]); add_street_names(ra["coords"],turns)
+        for m in turns: m.pop("_onto",None)
+        route_a=_route_payload(ra,surface,"Wind-smart route",
+            f"Heads {wind_dir} into the wind — tailwind home · {round(ra['gravel'])}% gravel · {round(ra['busy'])}% busy road")
+        route_a["maneuvers"]=turns
+        route_b=_route_payload(rb,surface,"Best gravel route",
+            f"Maximizes trail & gravel — wind ignored · {round(rb['gravel'])}% gravel · {round(rb['busy'])}% busy road") if rb else None
+    one_way=haversine((h_lon,h_lat),(s_lon,s_lat))/1000*1.3
+    rt=one_way*2; range_km=ev_range_km if ev_range_km else EV_RANGE_KM; ok=rt<range_km*0.85
     return {
-        "home":{"name":h_name},
-        "start":{"name":s_name,"lat":s_lat,"lon":s_lon},
-        "route":{"latlngs":[[c[1],c[0]] for c in coords],
-                 "markers":markers,"arrows":arrows,"maneuvers":turns,
-                 "km":round(route["km"],1),"gravel":round(route["gravel"]),
-                 "busy":round(route["busy"]),"heading":compass(route["bearing"]),
-                 "type":surface},
+        "home":{"name":h_name},"start":{"name":s_name,"lat":s_lat,"lon":s_lon},
+        "route":route_a,"route2":route_b,"routes_same":routes_same,
         "weather":{"day":wx["day"],"verdict":wx["verdict"],"level":wx["level"],
-                   "wind":wx["wind"],"wind_from":compass(wx["wind_from"]),
-                   "temp":wx["temp"],"rain":wx["rain"],"aqhi":wx["aqhi"],"notes":wx["notes"]},
+                   "wind":wx["wind"],"wind_from":wind_dir,
+                   "temp":wx["temp"],"rain":wx["rain"],"aqhi":wx["aqhi"],
+                   "notes":wx["notes"],"forecast":wx.get("forecast",[])},
         "ev":{"one_way":round(one_way),"round_trip":round(rt),"ok":ok,"range_used":round(range_km),
               "msg":("~%d km round trip — within your %d km EV range, no charging needed."%(round(rt),round(range_km))) if ok
                     else ("~%d km round trip — near/over your %d km EV range, plan a charging stop."%(round(rt),round(range_km)))},
