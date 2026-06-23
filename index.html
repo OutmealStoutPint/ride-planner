@@ -40,6 +40,12 @@
   .forecast tr.best-day{background:var(--greenbg);font-weight:600}
   .forecast tr.best-day td:first-child::after{content:" ✓";color:var(--green)}
   .explain{font-size:13px;color:var(--ink);margin:8px 0 4px;padding:9px 11px;background:var(--accentbg);border-radius:8px}
+  .route-card{border:2px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0}
+  .route-card.green{border-color:#639922;background:var(--greenbg)}
+  .route-card.blue{border-color:#185FA5;background:var(--accentbg)}
+  .route-card-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+  .rdot{width:13px;height:13px;border-radius:50%;flex-shrink:0}
+  .route-desc{font-size:12px;color:var(--muted);margin:0 0 8px}
   .kmmark{background:#fff;border:2px solid #639922;color:#2f5e0e;font:700 11px/16px system-ui;
           width:20px;height:20px;border-radius:50%;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.35)}
   .arrow{color:#235;font-size:16px;line-height:16px;text-align:center;text-shadow:0 0 3px #fff,0 0 3px #fff}
@@ -87,11 +93,25 @@
 
     <div class="result" id="result">
       <span class="verdict" id="verdict"></span>
-      <div class="stats">
-        <div class="stat"><b id="km">–</b><span id="km-label">km loop</span></div>
-        <div class="stat"><b id="gravel">–</b><span>% gravel/trail</span></div>
-        <div class="stat"><b id="busy">–</b><span>% busy road</span></div>
+      <div class="route-card green" id="card-a">
+        <div class="route-card-head"><span class="rdot" style="background:#639922"></span><b id="label-a">Wind-smart route</b></div>
+        <p class="route-desc" id="desc-a"></p>
+        <div class="stats">
+          <div class="stat"><b id="km-a">–</b><span id="km-label-a">km loop</span></div>
+          <div class="stat"><b id="gravel-a">–</b><span>% gravel/trail</span></div>
+          <div class="stat"><b id="busy-a">–</b><span>% busy road</span></div>
+        </div>
       </div>
+      <div class="route-card blue" id="card-b" style="display:none">
+        <div class="route-card-head"><span class="rdot" style="background:#185FA5"></span><b id="label-b">Best gravel route</b></div>
+        <p class="route-desc" id="desc-b"></p>
+        <div class="stats">
+          <div class="stat"><b id="km-b">–</b><span id="km-label-b">km loop</span></div>
+          <div class="stat"><b id="gravel-b">–</b><span>% gravel/trail</span></div>
+          <div class="stat"><b id="busy-b">–</b><span>% busy road</span></div>
+        </div>
+      </div>
+      <div id="same-msg" class="hint" style="display:none">Both strategies chose the same route — only one shown.</div>
       <div class="explain" id="explain" style="display:none"></div>
       <table class="forecast" id="forecast" style="display:none">
         <thead><tr><th>Day</th><th>Rain</th><th>Wind</th><th>Temp</th><th>Conditions</th></tr></thead>
@@ -99,7 +119,7 @@
       </table>
       <div class="ev" id="ev"></div>
       <ul class="notes" id="notes"></ul>
-      <div class="legend">▲ arrows = ride direction · ● numbers = km from start · <span style="color:#D85A30">●</span> <span id="turns">turns</span></div>
+      <div class="legend"><span style="color:#639922">━</span> wind-smart · <span style="color:#185FA5">━</span> best gravel · ▲ direction · ● km · <span style="color:#D85A30">●</span> <span id="turns">turns</span></div>
     </div>
   </div>
   <div id="map"></div>
@@ -109,11 +129,38 @@
 const map=L.map('map').setView([44.35,-78.74],10);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
-let line=null, marker=null;
+let line=null, line2=null, marker=null;
 
 function toggleEV(){
   document.getElementById('ev-inputs').style.display=
     document.getElementById('ev-toggle').checked ? 'block' : 'none';
+}
+
+function drawRoute(r, color){
+  const pl=L.polyline(r.latlngs,{color:color,weight:5}).addTo(map);
+  (r.arrows||[]).forEach(a=>{
+    const ic=L.divIcon({className:'',html:'<div class="arrow" style="transform:rotate('+a[2]+'deg);color:'+color+'">▲</div>',iconSize:[16,16],iconAnchor:[8,8]});
+    window.deco.push(L.marker([a[0],a[1]],{icon:ic,interactive:false}).addTo(map));
+  });
+  (r.markers||[]).forEach(m=>{
+    const ic=L.divIcon({className:'',html:'<div class="kmmark">'+m[2]+'</div>',iconSize:[20,20],iconAnchor:[10,10]});
+    window.deco.push(L.marker([m[0],m[1]],{icon:ic}).addTo(map).bindPopup(m[2]+' km'));
+  });
+  (r.maneuvers||[]).forEach(t=>{
+    const ic=L.divIcon({className:'',html:'<div class="turn"></div>',iconSize:[10,10],iconAnchor:[5,5]});
+    window.deco.push(L.marker([t.lat,t.lon],{icon:ic}).addTo(map)
+      .bindPopup(t.instruction+' · '+(t.dist_from_start_m/1000).toFixed(1)+' km'));
+  });
+  return pl;
+}
+
+function fillCard(suffix, r){
+  document.getElementById('label-'+suffix).textContent=r.label;
+  document.getElementById('desc-'+suffix).textContent=r.description;
+  document.getElementById('km-'+suffix).textContent=r.km;
+  document.getElementById('km-label-'+suffix).textContent=r.type==='outback'?'km out-and-back':'km loop';
+  document.getElementById('gravel-'+suffix).textContent=r.gravel;
+  document.getElementById('busy-'+suffix).textContent=r.busy;
 }
 
 async function plan(){
@@ -126,71 +173,82 @@ async function plan(){
   }
   const surfVal=surface.value;
   btn.disabled=true; btn.textContent='Planning…';
-  hint.textContent='Generating and scoring several candidate loops on live data — about 15 seconds.';
+  hint.textContent='Generating and scoring candidate routes on live data — about 15 seconds.';
   const params={home:home.value,start:start.value,distance:distance.value,surface:surfVal};
   if(document.getElementById('ev-toggle').checked){
     params.ev_range=document.getElementById('ev-range').value;
   }
-  const p=new URLSearchParams(params);
   try{
-    const r=await fetch('/api/plan?'+p); const d=await r.json();
+    const r=await fetch('/api/plan?'+new URLSearchParams(params));
+    const d=await r.json();
     if(d.error) throw new Error(d.error);
     res.style.display='block'; hint.textContent='';
+
+    // weather verdict
     const v=document.getElementById('verdict');
     const bestDate=new Date(d.weather.day+'T12:00:00');
     const dayName=bestDate.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'});
-    v.textContent=d.weather.verdict+' · '+dayName;
-    v.className='verdict '+d.weather.level;
+    v.textContent=d.weather.verdict+' · '+dayName; v.className='verdict '+d.weather.level;
 
-    // explanation of why this day was chosen
+    // weather explanation
     const forecast=d.weather.forecast||[];
     const explain=document.getElementById('explain');
-    if(forecast.length>1){
-      explain.textContent='We looked at '+forecast.length+' days of forecasts — '+dayName+' is your best window with the lightest rain and wind.';
-    } else {
-      explain.textContent='Weather forecast for '+dayName+'.';
-    }
+    explain.textContent=forecast.length>1
+      ? 'We looked at '+forecast.length+' days — '+dayName+' is your best window with the lightest rain and wind.'
+      : 'Weather forecast for '+dayName+'.';
     explain.style.display='block';
 
     // 4-day forecast table
-    const tbody=document.getElementById('forecast-body');
-    tbody.innerHTML='';
+    const tbody=document.getElementById('forecast-body'); tbody.innerHTML='';
     forecast.forEach(f=>{
       const d2=new Date(f.day+'T12:00:00');
-      const label=d2.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});
+      const lbl=d2.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});
       const tr=document.createElement('tr');
       if(f.best) tr.className='best-day';
-      tr.innerHTML=`<td>${label}</td><td>${Math.round(f.rain)}%</td><td>${f.wind} km/h</td><td>${f.temp}°C</td><td>${f.verdict}</td>`;
+      tr.innerHTML=`<td>${lbl}</td><td>${Math.round(f.rain)}%</td><td>${f.wind} km/h</td><td>${f.temp}°C</td><td>${f.verdict}</td>`;
       tbody.appendChild(tr);
     });
     document.getElementById('forecast').style.display='table';
-    km.textContent=d.route.km; gravel.textContent=d.route.gravel; busy.textContent=d.route.busy;
-    document.getElementById('km-label').textContent=d.route.type==='outback'?'km out-and-back':'km loop';
+
+    // route cards
+    fillCard('a', d.route);
+    document.getElementById('card-a').style.display='block';
+    if(d.route2){
+      fillCard('b', d.route2);
+      document.getElementById('card-b').style.display='block';
+      document.getElementById('same-msg').style.display='none';
+    } else {
+      document.getElementById('card-b').style.display='none';
+      document.getElementById('same-msg').style.display=d.routes_same?'block':'none';
+    }
+
+    // EV banner
     const ev=document.getElementById('ev');
     if(document.getElementById('ev-toggle').checked){
       ev.textContent='🔋 '+d.ev.msg; ev.className='ev '+(d.ev.ok?'ok':'no'); ev.style.display='block';
     } else { ev.style.display='none'; }
+
+    // weather notes
     const ul=document.getElementById('notes'); ul.innerHTML='';
     d.weather.notes.forEach(n=>{const li=document.createElement('li');li.textContent=n;ul.appendChild(li);});
-    if(line)map.removeLayer(line); if(marker)map.removeLayer(marker);
-    if(window.deco)window.deco.forEach(l=>map.removeLayer(l)); window.deco=[];
-    line=L.polyline(d.route.latlngs,{color:'#639922',weight:5}).addTo(map);
+
+    // map — clear old layers
+    if(line) map.removeLayer(line);
+    if(line2) map.removeLayer(line2);
+    if(marker) map.removeLayer(marker);
+    if(window.deco) window.deco.forEach(l=>map.removeLayer(l));
+    window.deco=[];
+
+    // draw route A (green) and route B (blue)
+    line=drawRoute(d.route,'#639922');
+    line2=d.route2 ? drawRoute(d.route2,'#185FA5') : null;
     marker=L.marker([d.start.lat,d.start.lon]).addTo(map).bindPopup('Start: '+d.start.name);
-    (d.route.arrows||[]).forEach(a=>{
-      const ic=L.divIcon({className:'',html:'<div class="arrow" style="transform:rotate('+a[2]+'deg)">▲</div>',iconSize:[16,16],iconAnchor:[8,8]});
-      window.deco.push(L.marker([a[0],a[1]],{icon:ic,interactive:false}).addTo(map));
-    });
-    (d.route.markers||[]).forEach(m=>{
-      const ic=L.divIcon({className:'',html:'<div class="kmmark">'+m[2]+'</div>',iconSize:[20,20],iconAnchor:[10,10]});
-      window.deco.push(L.marker([m[0],m[1]],{icon:ic}).addTo(map).bindPopup(m[2]+' km'));
-    });
-    (d.route.maneuvers||[]).forEach(t=>{
-      const ic=L.divIcon({className:'',html:'<div class="turn"></div>',iconSize:[10,10],iconAnchor:[5,5]});
-      window.deco.push(L.marker([t.lat,t.lon],{icon:ic}).addTo(map)
-        .bindPopup(t.instruction+' · '+(t.dist_from_start_m/1000).toFixed(1)+' km · '+t.angle+'°'));
-    });
     document.getElementById('turns').textContent=(d.route.maneuvers||[]).length+' turns';
-    map.fitBounds(line.getBounds(),{padding:[30,30]});
+
+    const bounds=line.getBounds();
+    if(line2) bounds.extend(line2.getBounds());
+    map.fitBounds(bounds,{padding:[30,30]});
+
   }catch(e){ err.textContent='⚠️ '+e.message; err.style.display='block'; hint.textContent=''; }
   btn.disabled=false; btn.textContent='Find a ride';
 }
